@@ -3,7 +3,7 @@
 # Configuration
 INSTALL_DIR="/opt/hidps-agent"
 SERVICE_NAME="hidps-agent"
-DEFAULT_BACKEND="ws://localhost:3000"
+DEFAULT_BACKEND="wss://hidps.simiyuclint.com"
 
 # Colors
 GREEN='\033[0;32m'

@@ -11,7 +11,7 @@ from watchdog.events import FileSystemEventHandler
 
 # Configuration (Loaded from Environment Variables)
 AGENT_ID = os.environ.get("AGENT_ID", "agent_unknown")
-BACKEND_URL = os.environ.get("BACKEND_URL", "ws://localhost:3000")
+BACKEND_URL = os.environ.get("BACKEND_URL", "ws://localhost:3001")
 RECONNECT_DELAY = 5
 
 # Global Event Queue for Logs
@@ -61,10 +61,10 @@ async def set_firewall_state(enable: bool):
     success, output = await run_shell_command(cmd)
     
     if success:
-        queue_normalized_log('agent_info', 'firewall_manager', f"Firewall {action}d successfully.")
+        queue_normalized_log('firewall', 'firewall_manager', f"Firewall {action}d successfully.")
         return {"status": "success", "message": f"Firewall {action}d"}
     else:
-        queue_normalized_log('agent_error', 'firewall_manager', f"Failed to {action} firewall: {output}")
+        queue_normalized_log('firewall', 'firewall_manager', f"Failed to {action} firewall: {output}")
         return {"status": "error", "message": output}
 
 async def get_firewall_status():
