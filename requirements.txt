@@ -1,2 +1,4 @@
 psutil
 websockets
+watchdog
+asyncio
