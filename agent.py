@@ -72,6 +72,43 @@ async def get_firewall_status():
     success, output = await run_shell_command(['ufw', 'status'])
     return output if success else "Unknown"
 
+async def get_firewall_rules():
+    """Parses 'ufw status numbered' into a JSON-friendly list of rules."""
+    success, output = await run_shell_command(['ufw', 'status', 'numbered'])
+    if not success:
+        return []
+    
+    rules = []
+    # Simple parser for UFW status table
+    lines = output.split('\n')
+    for line in lines:
+        if '[' in line and ']' in line:
+            # Format: [ 1] 22/tcp ALLOW IN Anywhere
+            try:
+                parts = line.split(']')
+                index = parts[0].replace('[', '').strip()
+                details = parts[1].strip().split()
+                # details example: ['22/tcp', 'ALLOW', 'IN', 'Anywhere']
+                rules.append({
+                    "id": index,
+                    "to": details[0],
+                    "action": details[1],
+                    "from": details[-1]
+                })
+            except: continue
+    return rules
+
+async def manage_rule(action, rule_data):
+    """Adds or deletes rules using the 'ufw' command."""
+    # action: 'allow' or 'delete'
+    # rule_data: e.g., '80/tcp' or '1' (for delete)
+    cmd = ['ufw', action, rule_data]
+    success, output = await run_shell_command(cmd)
+    
+    # Refresh rules after change
+    new_rules = await get_firewall_rules()
+    return {"status": "success" if success else "error", "rules": new_rules}
+
 # --- Monitoring Functions ---
 
 async def get_system_usage():
@@ -245,13 +282,21 @@ async def log_sender(websocket):
             raise 
 
 async def periodic_stats(websocket):
-    """Sends system stats every 30 seconds."""
+    """Sends system stats AND firewall status every 30 seconds."""
     while True:
         stats = await get_system_usage()
+        # Check if UFW is active
+        success, output = await run_shell_command(['ufw', 'status'])
+        is_enabled = "Status: active" in output
+        
         payload = {
-            "type": "agent_stats", 
+            "type": "agent_report", 
             "agent_id": AGENT_ID,
-            "data": stats
+            "data": {
+                **stats,
+                "firewall_enabled": is_enabled,
+                "firewall_rules": await get_firewall_rules()
+            }
         }
         await websocket.send(json.dumps(payload))
         await asyncio.sleep(30)
@@ -265,6 +310,15 @@ async def command_receiver(websocket):
             payload = data.get("payload", {})
             
             queue_normalized_log('agent_info', 'core', f"Received command: {cmd_type}")
+
+            if cmd_type == "add_firewall_rule":
+                result = await manage_rule('allow', payload.get("rule"))
+                await websocket.send(json.dumps({"type": "firewall_update", "rules": result['rules']}))
+            
+            elif cmd_type == "delete_firewall_rule":
+                # UFW delete uses the rule index number
+                result = await manage_rule('delete', str(payload.get("index")))
+                await websocket.send(json.dumps({"type": "firewall_update", "rules": result['rules']}))
 
             if cmd_type == "toggle_firewall":
                 await set_firewall_state(payload.get("enabled", False))
