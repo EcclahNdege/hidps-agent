@@ -191,7 +191,7 @@ async def watchdog_task():
 
 async def stream_journal_logs():
     """Streams logs from journalctl."""
-    cmd = "journalctl -f -n 0 --no-pager -o json"
+    cmd = "journalctl -f -n 50 --no-pager -o json"
     process = await asyncio.create_subprocess_shell(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
