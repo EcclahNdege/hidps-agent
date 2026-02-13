@@ -11,7 +11,7 @@ from watchdog.events import FileSystemEventHandler
 
 # Configuration (Loaded from Environment Variables)
 AGENT_ID = os.environ.get("AGENT_ID", "agent_unknown")
-BACKEND_URL = os.environ.get("BACKEND_URL", "wss://your-backend-name.onrender.com")
+BACKEND_URL = os.environ.get("BACKEND_URL", "wss://hidps-backend-gi76.onrender.com")
 RECONNECT_DELAY = 5
 
 # Global Event Queue for Logs
