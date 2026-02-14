@@ -179,13 +179,14 @@ async def watchdog_task():
         if active_watches > 0:
             observer.start()
         
+        loop = asyncio.get_running_loop()
         try:
             await reload_watcher.wait()
             reload_watcher.clear()
         finally:
             if observer.is_alive():
                 observer.stop()
-                observer.join()
+                await loop.run_in_executor(None, observer.join)
 
 # --- Journal Logs Streaming ---
 
@@ -276,9 +277,9 @@ async def log_sender(websocket):
         log_entry = await log_queue.get()
         try:
             await websocket.send(json.dumps(log_entry))
-        except Exception:
-            # If send fails, put back in queue or handle retry? 
-            # For now, we rely on the outer loop to reconnect.
+        except websockets.exceptions.ConnectionClosed:
+            # Connection closed, put the log back and let the handler reconnect.
+            await log_queue.put(log_entry)
             raise 
 
 async def periodic_stats(websocket):
