@@ -100,14 +100,30 @@ async def get_firewall_rules():
 
 async def manage_rule(action, rule_data):
     """Adds or deletes rules using the 'ufw' command."""
-    # action: 'allow' or 'delete'
-    # rule_data: e.g., '80/tcp' or '1' (for delete)
-    cmd = ['ufw', action, rule_data]
+    # action: 'allow', 'deny', or 'delete'
+    # rule_data: e.g., '80/tcp' for allow/deny, or '1' (rule number) for delete
+    
+    if action == 'delete':
+        # For delete, UFW syntax is: ufw --force delete <rule_number>
+        # --force flag skips the confirmation prompt
+        cmd = ['ufw', '--force', 'delete', rule_data]
+    else:
+        # For allow/deny: ufw allow 80/tcp or ufw deny 8080/tcp
+        cmd = ['ufw', action, rule_data]
+    
+    print(f"Running UFW command: {' '.join(cmd)}")
     success, output = await run_shell_command(cmd)
+    
+    if not success:
+        print(f"UFW command failed: {output}")
+        queue_normalized_log('firewall', 'ufw', f"Failed to {action} rule: {output}")
+    else:
+        print(f"UFW command succeeded: {output}")
+        queue_normalized_log('firewall', 'ufw', f"Successfully {action}ed rule: {rule_data}")
     
     # Refresh rules after change
     new_rules = await get_firewall_rules()
-    return {"status": "success" if success else "error", "rules": new_rules}
+    return {"status": "success" if success else "error", "rules": new_rules, "message": output}
 
 # --- Monitoring Functions ---
 
