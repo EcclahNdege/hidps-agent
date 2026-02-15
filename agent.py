@@ -119,74 +119,136 @@ async def get_system_usage():
         "disk_usage": psutil.disk_usage('/').percent
     }
 
-# --- Watchdog Logic (Refined) ---
+# --- Watchdog Logic (FIXED) ---
 
 watched_paths = set()
 paths_lock = asyncio.Lock()
 reload_watcher = asyncio.Event()
 
 class WatchdogEventHandler(FileSystemEventHandler):
+    """Handles file system events and logs them."""
+    
+    def __init__(self, watched_files):
+        super().__init__()
+        self.watched_files = watched_files  # Set of specific file paths we care about
+    
+    def _should_log_event(self, path):
+        """Check if this path is one we're explicitly monitoring."""
+        abs_path = os.path.abspath(path)
+        # Check if the path exactly matches one of our watched files
+        # OR if it's inside a watched directory
+        for watched in self.watched_files:
+            if abs_path == watched or abs_path.startswith(watched + os.sep):
+                return True
+        return False
+    
     def on_created(self, event):
-        queue_normalized_log('file_monitoring', 'watchdog', f"File/Dir created: {event.src_path}")
+        if self._should_log_event(event.src_path):
+            queue_normalized_log('file_monitoring', 'watchdog', f"File/Dir created: {event.src_path}")
+    
     def on_deleted(self, event):
-        queue_normalized_log('file_monitoring', 'watchdog', f"File/Dir deleted: {event.src_path}")
+        if self._should_log_event(event.src_path):
+            queue_normalized_log('file_monitoring', 'watchdog', f"File/Dir deleted: {event.src_path}")
+    
     def on_modified(self, event):
-        if not event.is_directory:
+        if not event.is_directory and self._should_log_event(event.src_path):
             queue_normalized_log('file_monitoring', 'watchdog', f"File modified: {event.src_path}")
+    
     def on_moved(self, event):
-        queue_normalized_log('file_monitoring', 'watchdog', f"Moved: {event.src_path} to {event.dest_path}")
+        if self._should_log_event(event.src_path):
+            queue_normalized_log('file_monitoring', 'watchdog', f"Moved: {event.src_path} to {event.dest_path}")
 
 async def monitor_file_command(path):
+    """Add a path to the watch list."""
     async with paths_lock:
-        watched_paths.add(os.path.abspath(path))
+        abs_path = os.path.abspath(path)
+        watched_paths.add(abs_path)
+        queue_normalized_log('agent_info', 'watchdog', f"Now monitoring: {abs_path}")
     reload_watcher.set()
-    queue_normalized_log('agent_info', 'watchdog', f"Now monitoring: {path}")
 
 async def unmonitor_file_command(path):
+    """Remove a path from the watch list."""
     async with paths_lock:
-        watched_paths.discard(os.path.abspath(path))
+        abs_path = os.path.abspath(path)
+        watched_paths.discard(abs_path)
+        queue_normalized_log('agent_info', 'watchdog', f"Stopped monitoring: {abs_path}")
     reload_watcher.set()
-    queue_normalized_log('agent_info', 'watchdog', f"Stopped monitoring: {path}")
 
 async def watchdog_task():
-    """Manages the file observer loop."""
-    event_handler = WatchdogEventHandler()
+    """Manages the file observer loop with proper directory and file watching."""
     
     # Add default paths
     async with paths_lock:
-         watched_paths.add('/etc/passwd')
-         watched_paths.add('/etc/shadow')
+        watched_paths.add('/etc/passwd')
+        watched_paths.add('/etc/shadow')
 
+    observer = None
+    
     while True:
-        observer = Observer()
-        async with paths_lock:
-            current_paths = set(watched_paths)
-
-        active_watches = 0
-        for path in current_paths:
-            if os.path.exists(path):
-                # Directories are recursive, files are not
-                recursive = os.path.isdir(path)
-                # Watchdog needs the directory of the file if it's a file
-                target = path if recursive else os.path.dirname(path)
-                
-                try:
-                    observer.schedule(event_handler, target, recursive=recursive)
-                    active_watches += 1
-                except Exception as e:
-                    queue_normalized_log('agent_error', 'watchdog', f"Failed to watch {path}: {e}")
-
-        if active_watches > 0:
-            observer.start()
-        
-        loop = asyncio.get_running_loop()
         try:
+            # Stop existing observer if running
+            if observer and observer.is_alive():
+                observer.stop()
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, observer.join)
+            
+            # Get current watched paths
+            async with paths_lock:
+                current_paths = set(watched_paths)
+            
+            if not current_paths:
+                # No paths to watch, just wait for reload signal
+                await reload_watcher.wait()
+                reload_watcher.clear()
+                continue
+            
+            # Create new observer with current paths
+            observer = Observer()
+            event_handler = WatchdogEventHandler(current_paths)
+            
+            # Group paths by their parent directories
+            dirs_to_watch = {}
+            for path in current_paths:
+                if not os.path.exists(path):
+                    queue_normalized_log('agent_error', 'watchdog', f"Path does not exist: {path}")
+                    continue
+                
+                if os.path.isdir(path):
+                    # Watch the directory recursively
+                    dirs_to_watch[path] = True  # recursive
+                else:
+                    # For files, watch their parent directory non-recursively
+                    parent_dir = os.path.dirname(path)
+                    if parent_dir not in dirs_to_watch:
+                        dirs_to_watch[parent_dir] = False  # non-recursive
+            
+            # Schedule watches
+            active_watches = 0
+            for dir_path, recursive in dirs_to_watch.items():
+                try:
+                    observer.schedule(event_handler, dir_path, recursive=recursive)
+                    active_watches += 1
+                    queue_normalized_log('agent_info', 'watchdog', 
+                        f"Watching directory: {dir_path} (recursive={recursive})")
+                except Exception as e:
+                    queue_normalized_log('agent_error', 'watchdog', 
+                        f"Failed to watch {dir_path}: {e}")
+            
+            if active_watches > 0:
+                observer.start()
+                queue_normalized_log('agent_info', 'watchdog', 
+                    f"File monitoring active: watching {active_watches} directories for {len(current_paths)} paths")
+            else:
+                queue_normalized_log('agent_error', 'watchdog', 
+                    "No valid paths to watch")
+            
+            # Wait for reload signal or indefinitely if watching
             await reload_watcher.wait()
             reload_watcher.clear()
-        finally:
-            if observer.is_alive():
-                observer.stop()
-                await loop.run_in_executor(None, observer.join)
+            
+        except Exception as e:
+            queue_normalized_log('agent_error', 'watchdog', f"Watchdog error: {e}")
+            await asyncio.sleep(5)
 
 # --- Journal Logs Streaming ---
 
@@ -321,7 +383,7 @@ async def command_receiver(websocket):
                 result = await manage_rule('delete', str(payload.get("index")))
                 await websocket.send(json.dumps({"type": "firewall_update", "rules": result['rules']}))
 
-            if cmd_type == "toggle_firewall":
+            elif cmd_type == "toggle_firewall":
                 await set_firewall_state(payload.get("enabled", False))
             
             elif cmd_type == "monitor_file":
