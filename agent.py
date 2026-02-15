@@ -142,21 +142,65 @@ class WatchdogEventHandler(FileSystemEventHandler):
                 return True
         return False
     
+    def _get_watched_file_name(self, path):
+        """Returns the human-readable name of the watched file that triggered this event."""
+        abs_path = os.path.abspath(path)
+        for watched in self.watched_files:
+            if abs_path == watched:
+                return watched
+            elif abs_path.startswith(watched + os.sep):
+                return watched
+        return path
+    
+    def _is_temp_file_for_watched(self, path):
+        """Check if this is a temp file in a directory containing a watched file."""
+        abs_path = os.path.abspath(path)
+        parent_dir = os.path.dirname(abs_path)
+        
+        # Check if any watched file is in this directory
+        for watched in self.watched_files:
+            if os.path.dirname(watched) == parent_dir:
+                # This temp file is in the same directory as a watched file
+                return watched
+        return None
+    
     def on_created(self, event):
         if self._should_log_event(event.src_path):
-            queue_normalized_log('file_monitoring', 'watchdog', f"File/Dir created: {event.src_path}")
+            watched_file = self._get_watched_file_name(event.src_path)
+            queue_normalized_log('file_monitoring', 'watchdog', 
+                f"New file created in monitored location: {watched_file}")
+        else:
+            # Check if it's a temp file related to a watched file
+            watched = self._is_temp_file_for_watched(event.src_path)
+            if watched and ('.goutputstream' in event.src_path or 
+                           event.src_path.endswith('~') or 
+                           event.src_path.endswith('.swp')):
+                queue_normalized_log('file_monitoring', 'watchdog', 
+                    f"Monitored file being edited: {watched}")
     
     def on_deleted(self, event):
         if self._should_log_event(event.src_path):
-            queue_normalized_log('file_monitoring', 'watchdog', f"File/Dir deleted: {event.src_path}")
+            watched_file = self._get_watched_file_name(event.src_path)
+            queue_normalized_log('file_monitoring', 'watchdog', 
+                f"⚠️ CRITICAL: Monitored file DELETED: {watched_file}")
     
     def on_modified(self, event):
         if not event.is_directory and self._should_log_event(event.src_path):
-            queue_normalized_log('file_monitoring', 'watchdog', f"File modified: {event.src_path}")
+            watched_file = self._get_watched_file_name(event.src_path)
+            queue_normalized_log('file_monitoring', 'watchdog', 
+                f"Monitored file MODIFIED: {watched_file}")
     
     def on_moved(self, event):
-        if self._should_log_event(event.src_path):
-            queue_normalized_log('file_monitoring', 'watchdog', f"Moved: {event.src_path} to {event.dest_path}")
+        # Check if destination is a watched file (temp file renamed to monitored file)
+        if self._should_log_event(event.dest_path):
+            watched_file = self._get_watched_file_name(event.dest_path)
+            queue_normalized_log('file_monitoring', 'watchdog', 
+                f"Monitored file UPDATED (saved by editor): {watched_file}")
+        # Check if source was a watched file (file moved away)
+        elif self._should_log_event(event.src_path):
+            watched_file = self._get_watched_file_name(event.src_path)
+            queue_normalized_log('file_monitoring', 'watchdog', 
+                f"⚠️ CRITICAL: Monitored file MOVED/RENAMED: {watched_file} → {event.dest_path}")
 
 async def monitor_file_command(path):
     """Add a path to the watch list."""
