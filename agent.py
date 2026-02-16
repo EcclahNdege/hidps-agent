@@ -5,7 +5,6 @@ import subprocess
 import datetime
 import os
 import sys
-import socket
 import websockets
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -128,43 +127,6 @@ async def manage_rule(action, rule_data):
     # Refresh rules after change
     new_rules = await get_firewall_rules()
     return {"status": "success" if success else "error", "rules": new_rules, "message": output}
-
-# --- PORT SCANNING FUNCTIONS (NEW) ---
-
-async def scan_port(ip: str, port: int, timeout: float = 0.5):
-    """Scan a single port."""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        result = sock.connect_ex((ip, port))
-        sock.close()
-        
-        if result == 0:
-            try:
-                service = socket.getservbyport(port)
-            except:
-                service = "unknown"
-            return {"port": port, "status": "open", "service": service}
-        return None
-    except:
-        return None
-
-async def scan_common_ports(ip: str):
-    """Scan common ports (fast scan)."""
-    ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 3306, 3389, 5432, 8080, 8443]
-    tasks = [scan_port(ip, port) for port in ports]
-    results = await asyncio.gather(*tasks)
-    return [r for r in results if r is not None]
-
-async def scan_port_range(ip: str, start: int, end: int):
-    """Scan a range of ports."""
-    if end - start > 1000:
-        return []
-    tasks = [scan_port(ip, port) for port in range(start, end + 1)]
-    results = await asyncio.gather(*tasks)
-    return [r for r in results if r is not None]
-
-# --- END PORT SCANNING FUNCTIONS ---
 
 # --- Monitoring Functions ---
 
@@ -495,35 +457,9 @@ async def command_receiver(websocket):
 
             elif cmd_type == "get_firewall_status":
                 status = await get_firewall_status()
+                # Respond directly (optional, usually updates state via stats or logs)
                 resp = {"type": "command_response", "id": data.get("id"), "result": status}
                 await websocket.send(json.dumps(resp))
-            
-            # PORT SCANNING COMMANDS (NEW)
-            elif cmd_type == "scan_common_ports":
-                ip = payload.get("ip", "127.0.0.1")
-                queue_normalized_log('scan', 'scanner', f"Scanning {ip}")
-                results = await scan_common_ports(ip)
-                await websocket.send(json.dumps({
-                    "type": "scan_results",
-                    "scan_type": "common_ports",
-                    "target": ip,
-                    "open_ports": results,
-                    "total_found": len(results)
-                }))
-            
-            elif cmd_type == "scan_port_range":
-                ip = payload.get("ip")
-                start = payload.get("start_port")
-                end = payload.get("end_port")
-                queue_normalized_log('scan', 'scanner', f"Scanning {ip}:{start}-{end}")
-                results = await scan_port_range(ip, start, end)
-                await websocket.send(json.dumps({
-                    "type": "scan_results",
-                    "scan_type": "port_range",
-                    "target": ip,
-                    "open_ports": results,
-                    "total_found": len(results)
-                }))
 
         except json.JSONDecodeError:
             print("Received invalid JSON command")
