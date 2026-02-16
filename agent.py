@@ -121,6 +121,9 @@ async def manage_rule(action, rule_data):
         print(f"UFW command succeeded: {output}")
         queue_normalized_log('firewall', 'ufw', f"Successfully {action}ed rule: {rule_data}")
     
+    # CRITICAL FIX: Wait for UFW to finish processing before getting new rules
+    await asyncio.sleep(0.5)
+    
     # Refresh rules after change
     new_rules = await get_firewall_rules()
     return {"status": "success" if success else "error", "rules": new_rules, "message": output}
